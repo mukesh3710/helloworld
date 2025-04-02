@@ -1,0 +1,46 @@
+- name: Create Multiple Filesystems from CSV
+  hosts: all
+  become: yes
+  vars:
+    filesystems: "{{ lookup('file', 'filesystems.csv') | splitlines | map('split', ',') | list }}"
+
+  tasks:
+    - name: Convert CSV data to structured variables
+      set_fact:
+        fs_list: "{{ filesystems[1:] | map('list', ['fs', 'size', 'vg']) | map('items2dict') | list }}"
+
+    - name: Ensure volume groups exist
+      command: "vgdisplay {{ item.vg }}"
+      with_items: "{{ fs_list }}"
+      register: vg_check
+      ignore_errors: yes
+
+    - name: Create logical volumes
+      command: "lvcreate -L {{ item.size }}G -n lv{{ item.fs | regex_replace('^/', '') | replace('/', '_') }} {{ item.vg }}"
+      with_items: "{{ fs_list }}"
+      when: vg_check.rc == 0
+
+    - name: Create mount points
+      file:
+        path: "{{ item.fs }}"
+        state: directory
+        mode: '0755'
+      with_items: "{{ fs_list }}"
+
+    - name: Format filesystems with XFS
+      command: "mkfs.xfs /dev/{{ item.vg }}/lv{{ item.fs | regex_replace('^/', '') | replace('/', '_') }}"
+      with_items: "{{ fs_list }}"
+
+    - name: Update /etc/fstab
+      lineinfile:
+        path: /etc/fstab
+        line: "/dev/{{ item.vg }}/lv{{ item.fs | regex_replace('^/', '') | replace('/', '_') }} {{ item.fs }} xfs defaults 1 2"
+      with_items: "{{ fs_list }}"
+
+    - name: Mount filesystems
+      command: "mount {{ item.fs }}"
+      with_items: "{{ fs_list }}"
+
+    - name: Verify filesystem creation
+      command: "df -h {{ item.fs }}"
+      with_items: "{{ fs_list }}"
